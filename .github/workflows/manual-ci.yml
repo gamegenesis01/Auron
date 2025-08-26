@@ -1,0 +1,104 @@
+name: Manual CI (Auron)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_python_checks:
+        description: "Run Python lint/tests (requires code & pyproject)"
+        type: boolean
+        default: false
+      run_markdown_links:
+        description: "Check README/docs links (uses lychee)"
+        type: boolean
+        default: false
+      python_version:
+        description: "Python version (if checks enabled)"
+        type: choice
+        default: "3.11"
+        options: ["3.11", "3.12", "3.13"]
+
+# Keep minimal permissions for safety
+permissions:
+  contents: read
+
+# Avoid overlapping runs
+concurrency:
+  group: manual-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show selected options
+        run: |
+          echo "run_python_checks = ${{ inputs.run_python_checks }}"
+          echo "run_markdown_links = ${{ inputs.run_markdown_links }}"
+          echo "python_version = ${{ inputs.python_version }}"
+
+  python:
+    if: ${{ inputs.run_python_checks == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ inputs.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync deps (if pyproject exists)
+        run: |
+          if [ -f "pyproject.toml" ]; then
+            uv sync
+          else
+            echo "No pyproject.toml found; skipping sync."
+          fi
+
+      - name: Ruff lint (if available)
+        run: |
+          if uv run python -c "import importlib; exit(0 if importlib.util.find_spec('ruff') else 1)"; then
+            uv run ruff check .
+          else
+            echo "ruff not installed in env; skipping."
+          fi
+
+      - name: Black check (if available)
+        run: |
+          if uv run python -c "import importlib; exit(0 if importlib.util.find_spec('black') else 1)"; then
+            uv run black --check .
+          else
+            echo "black not installed in env; skipping."
+          fi
+
+      - name: Pytest (if tests present)
+        run: |
+          if [ -d "tests" ]; then
+            uv run pytest -q
+          else
+            echo "No tests/ directory found; skipping."
+          fi
+
+  markdown-links:
+    if: ${{ inputs.run_markdown_links == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lychee checks hyperlinks in Markdown files.
+      # Safe & quick; you can disable external checks with --offline if desired.
+      - name: Check links with lychee
+        uses: lycheeverse/lychee-action@v1
+        with:
+          # Scan README and docs only
+          args: >
+            --no-progress
+            --verbose
+            --max-concurrency 4
+            --exclude-mail
+            README.md docs/**/*.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
